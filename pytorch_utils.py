@@ -5,7 +5,7 @@ from __future__ import (
     print_function,
     unicode_literals,
 )
-
+# commentaire !! 22
 import os
 import torch
 import torch.nn as nn
@@ -387,19 +387,11 @@ def checkpoint_state(model=None, optimizer=None, best_prec=None, epoch=None, it=
     }
 
 
-def save_checkpoint(state, is_best, filename="checkpoint", bestname="model_best", max_best_saves = 10):
+def save_checkpoint(state, is_best, filename="checkpoint", bestname="model_best"):
     filename = "{}.pth.tar".format(filename)
     torch.save(state, filename)
-    parent_dir = os.path.dirname(filename)
-    
     if is_best:
-        shutil.copyfile(filename, "{}_it-{}_epoch-{}.pth.tar".format(bestname, state["it"], state["epoch"]))
-    list_best = [name for name in os.listdir(parent_dir) if name[:18] == "pointnet2_cls_best"]
-    nb_best_saves = len(list_best)
-    if nb_best_saves > max_best_saves : 
-        list_best_epoch = np.array([name.split('.')[0].split('-')[-1] for name in list_best]).astype('int')
-        pos = np.argmin(list_best_epoch)
-        os.remove(os.path.join(parent_dir, list_best[pos]))
+        shutil.copyfile(filename, "{}.pth.tar".format(bestname))
 
 
 def load_checkpoint(model=None, optimizer=None, filename="checkpoint"):
@@ -588,7 +580,7 @@ class CrossValSplitter:
             xbar = stats.mean(samples)
             sx = stats.stdev(samples, xbar)
             tstar = student_t.ppf(1.0 - 0.025, len(samples) - 1)
-            margin_of_error = tstar * sx / np.sqrt(len(samples))
+            margin_of_error = tstar * sx / sqrt(len(samples))
             print("{}: {} +/- {}".format(name, xbar, margin_of_error))
 
 
@@ -658,7 +650,6 @@ class Trainer(object):
         bnm_scheduler=None,
         eval_frequency=-1,
         viz=None,
-        lr_decay_fct=None,
     ):
         self.model, self.model_fn, self.optimizer, self.lr_scheduler, self.bnm_scheduler = (
             model,
@@ -670,7 +661,6 @@ class Trainer(object):
 
         self.checkpoint_name, self.best_name = checkpoint_name, best_name
         self.eval_frequency = eval_frequency
-        self.lr_decay_fct = lr_decay_fct
 
         self.training_best, self.eval_best = {}, {}
         self.viz = viz
@@ -695,23 +685,20 @@ class Trainer(object):
         else:
             raise AssertionError("Unknown type: {}".format(type(v)))
 
-    def _train_it(self, it, batch, epoch):
+    def _train_it(self, it, batch):
         self.model.train()
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step(it)
+
+        if self.bnm_scheduler is not None:
+            self.bnm_scheduler.step(it)
 
         self.optimizer.zero_grad()
         _, loss, eval_res = self.model_fn(self.model, batch)
 
         loss.backward()
         self.optimizer.step()
-        
-        if False :
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step(it)
-    
-            if self.bnm_scheduler is not None:
-                self.bnm_scheduler.step(it)
-            
-        #self.optimizer.param_groups[0]['lr'] = self.lr_decay_fct(epoch)
 
         return eval_res
 
@@ -721,16 +708,12 @@ class Trainer(object):
         eval_dict = {}
         total_loss = 0.0
         count = 1.0
-        total_preds = torch.tensor([]).to("cuda", non_blocking=True)
         for i, data in tqdm.tqdm(
             enumerate(d_loader, 0), total=len(d_loader), leave=False, desc="val"
         ):
             self.optimizer.zero_grad()
 
-            preds, loss, eval_res = self.model_fn(self.model, data, eval=True)
-            # Concatenate all preds
-            total_preds = torch.cat((total_preds, preds))
-            #_, classes = torch.max(preds, -1)
+            _, loss, eval_res = self.model_fn(self.model, data, eval=True)
 
             total_loss += loss.item()
             count += 1
@@ -738,12 +721,7 @@ class Trainer(object):
                 if v is not None:
                     eval_dict[k] = eval_dict.get(k, []) + [v]
 
-        return total_preds, total_loss / count, eval_dict
-    
-    def get_lr(self):
-        if self.optimizer is not None :
-            return self.optimizer.param_groups[0]['lr']
-        else : print("MISSING optimizer")
+        return total_loss / count, eval_dict
 
     def train(
         self,
@@ -771,35 +749,18 @@ class Trainer(object):
             Testing loss of the best model
         """
 
-        eval_frequency = (self.eval_frequency if self.eval_frequency > 0 else len(train_loader))
+        eval_frequency = (
+            self.eval_frequency if self.eval_frequency > 0 else len(train_loader)
+        )
 
         it = start_it
         with tqdm.trange(start_epoch, n_epochs + 1, desc="epochs") as tbar, tqdm.tqdm(
             total=eval_frequency, leave=False, desc="train"
         ) as pbar:
-            
-            save = {"it" : [], 
-                    "epoch" : [],
-                    "train_acc" : [],
-                    "train_loss" : [],
-                    "val_acc" : [],
-                    "val_loss" : [],
-                    "breakpoint" : [],
-                    "lr" : [],
-                    }
-            train_val = {}
-            
-            it_best = 1
-            last_break = 1
-            
-            #seuil_epoch_lr = 35            
-            # seuil_it_lr = seuil_epoch_lr * len(train_loader) / len(train_loader[0])
-            seuil_it_lr = 7000
-            
+
             for epoch in tbar:
                 for batch in train_loader:
-                    
-                    res = self._train_it(it, batch, epoch)
+                    res = self._train_it(it, batch)
                     it += 1
 
                     pbar.update()
@@ -808,30 +769,15 @@ class Trainer(object):
 
                     if self.viz is not None:
                         self.viz.update("train", it, res)
-                    
-                    # Add the current acc and loss to train_val
-                    for name, val in res.items() : 
-                        train_val[name] = train_val.get(name, []) + [val] #append
 
-                    # At the moment of evaluation
                     if (it % eval_frequency) == 0:
                         pbar.close()
 
                         if test_loader is not None:
-                            _, val_loss, res = self.eval_epoch(test_loader)
+                            val_loss, res = self.eval_epoch(test_loader)
 
                             if self.viz is not None:
                                 self.viz.update("val", it, res)
-                                
-                            # Saving to the plot
-                            save["it"].append(it)
-                            save["epoch"].append(epoch)
-                            for name, val in res.items() :
-                                save["val_%s"%name].append(np.mean(np.array(val)))
-                                save["train_%s"%name].append(np.mean(np.array(train_val[name])))
-                                train_val[name] = []
-                            save["lr"].append(self.optimizer.param_groups[0]['lr'])
-                                
 
                             is_best = val_loss < best_loss
                             best_loss = min(best_loss, val_loss)
@@ -843,14 +789,6 @@ class Trainer(object):
                                 filename=self.checkpoint_name,
                                 bestname=self.best_name,
                             )
-                                
-                            if is_best : it_best = it
-                            
-                            if abs(it - it_best) > seuil_it_lr and abs(it - last_break) > seuil_it_lr :
-                                last_break = it
-                                save["breakpoint"].append(it)                                
-                                # Change lr here !!!
-                                self.optimizer.param_groups[0]['lr'] /= 10
 
                         pbar = tqdm.tqdm(
                             total=eval_frequency, leave=False, desc="train"
@@ -859,4 +797,4 @@ class Trainer(object):
 
                     self.viz.flush()
 
-        return best_loss, save
+        return best_loss

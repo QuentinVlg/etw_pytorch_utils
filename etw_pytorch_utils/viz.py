@@ -16,7 +16,10 @@ __all__ = ["VisdomViz", "CmdLineViz"]
 
 class _DefaultVizCallback(object):
     def __init__(self):
-        self.train_vals = {}
+        # Ajout au fur et à mesure de l'entrainement des résultats 
+        # dans train_vals, puis moyenne et retour à zéro
+        # k c'est "acc" ou bien "loss"
+        self.train_vals = {} 
         self.train_emas = {}
         self.ema_beta = 0.25
 
@@ -56,6 +59,7 @@ class VisdomViz(object):
         self.viz.text(_text, win=win)
 
     def update(self, mode, it, eval_dict):
+        # k is "acc", v in list of acc for each batch evaluated
         for k, v in eval_dict.items():
             if k in self.update_callbacks:
                 self.update_callbacks[k](self, mode, it, k, v)
